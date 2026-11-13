@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request
+from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required
 from sqlalchemy.exc import IntegrityError
-from werkzeug.security import generate_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from ..extensions import db
 from ..models import User
@@ -20,7 +21,7 @@ def signup():
     user = User(
         first_name=data["first_name"].strip(),
         last_name=data["last_name"].strip(),
-        email=data["email"].strip(),
+        email=data["email"].strip().lower(),
         password_hash=generate_password_hash(data["password"]),
         role="user",
     )
@@ -31,3 +32,28 @@ def signup():
         db.session.rollback()
         return jsonify(error="Email already registered"), 409
     return jsonify(id=user.id, email=user.email), 201
+
+
+@bp.post("/login")
+def login():
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+
+    user = db.session.execute(
+        db.select(User).filter_by(email=email)
+    ).scalar_one_or_none()
+
+    if user is None or not check_password_hash(user.password_hash, password):
+        return jsonify(error="Invalid email or password"), 401
+    token = create_access_token(identity=str(user.id))
+    return jsonify(access_token=token)
+
+
+@bp.get("/me")
+@jwt_required()
+def me():
+    user = db.session.get(User, int(get_jwt_identity()))
+    if user is None:
+        return jsonify(error="User not found"), 404
+    return jsonify(id=user.id, email=user.email, first_name=user.first_name)

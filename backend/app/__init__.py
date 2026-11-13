@@ -1,7 +1,7 @@
 from config import Config
 from flask import Flask, jsonify
 
-from .extensions import db, migrate
+from .extensions import db, jwt, migrate
 from .routes.auth import bp as auth_bp
 
 
@@ -11,7 +11,7 @@ def create_app():
     db.init_app(app)
     migrate.init_app(app, db)
     app.register_blueprint(auth_bp)
-    from . import models
+    jwt.init_app(app)
 
     @app.get("/")
     def health():
