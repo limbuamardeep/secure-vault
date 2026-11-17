@@ -12,6 +12,8 @@ class User(db.Model):
     password_hash = db.Column(db.String(256), nullable=False)
     role = db.Column(db.String(20), nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    kdf_salt = db.Column(db.LargeBinary(16), nullable=False)
+    wrapped_key = db.Column(db.LargeBinary, nullable=False)
     entries = db.relationship(
         "PasswordEntry", back_populates="owner", cascade="all, delete-orphan"
     )

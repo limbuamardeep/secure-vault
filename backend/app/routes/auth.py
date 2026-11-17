@@ -1,9 +1,19 @@
+import os
+
 from flask import Blueprint, jsonify, request
-from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required
+from flask_jwt_extended import (
+    create_access_token,
+    decode_token,
+    get_jwt,
+    get_jwt_identity,
+    jwt_required,
+)
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from ..crypto import decrypt, derive_kek, encrypt
 from ..extensions import db
+from ..keycache import key_cache
 from ..models import User
 
 bp = Blueprint("auth", __name__, url_prefix="/auth")
@@ -18,11 +28,16 @@ def signup():
         return jsonify(error=f"Missing:{','.join(missing)}"), 400
     if len(data["password"]) < 8:
         return jsonify(error="Password must be atleast 8 characters long"), 400
+    salt = os.urandom(16)
+    data_key = os.urandom(32)
+    kek = derive_kek(data["password"], salt)
     user = User(
         first_name=data["first_name"].strip(),
         last_name=data["last_name"].strip(),
         email=data["email"].strip().lower(),
         password_hash=generate_password_hash(data["password"]),
+        kdf_salt=salt,
+        wrapped_key=encrypt(kek, data_key),
         role="user",
     )
     db.session.add(user)
@@ -46,7 +61,10 @@ def login():
 
     if user is None or not check_password_hash(user.password_hash, password):
         return jsonify(error="Invalid email or password"), 401
+    kek = derive_kek(password, user.kdf_salt)
+    data_key = decrypt(kek, user.wrapped_key)
     token = create_access_token(identity=str(user.id))
+    key_cache[decode_token(token)["jti"]] = data_key
     return jsonify(access_token=token)
 
 
@@ -57,3 +75,10 @@ def me():
     if user is None:
         return jsonify(error="User not found"), 404
     return jsonify(id=user.id, email=user.email, first_name=user.first_name)
+
+
+@bp.post("/logout")
+@jwt_required()
+def logout():
+    key_cache.pop(get_jwt()["jti"], None)
+    return "", 204
