@@ -1,19 +1,24 @@
 # Secure Vault
 
-A password-manager backend built with Flask. Users can register, log in with JWT authentication, and (in upcoming work) store encrypted credentials in a personal vault.
+A password-manager backend built with Flask. Users can register, log in with JWT authentication, and protect their vault data with a per-user encryption key.
 
-> **Status:** Work in progress. Authentication is implemented. The password-entry data model exists, but its CRUD endpoints and encryption logic are not built yet.
+> **Status:** Work in progress. Authentication, password recovery, password changes, and per-user key wrapping are implemented. Password-entry CRUD endpoints are not implemented yet.
 
 ## Features implemented so far
 
 - Application factory (`create_app`) with environment-based configuration
 - User model with a unique email constraint
 - Password-entry model with a one-to-many relationship to users (cascade delete)
-- Signup, login and current-user endpoints
+- Signup, login, current-user and logout endpoints
+- Password change and recovery-key password reset endpoints
 - Password hashing with Werkzeug
 - JWT access tokens (15-minute expiry) via Flask-JWT-Extended
+- AES-GCM encryption with a per-user data key
+- Scrypt key derivation from the master password
+- Recovery-key wrapping of the per-user data key
 - Database migrations with Flask-Migrate / Alembic
 - Health-check endpoint
+- Pytest coverage for cryptography and authentication/recovery flows
 
 ## Tech stack
 
@@ -39,6 +44,8 @@ secure-vault/
     │   ├── __init__.py        # App factory, health route
     │   ├── extensions.py      # db, migrate, jwt instances
     │   ├── models.py          # User, PasswordEntry
+    │   ├── crypto.py          # Key derivation, AES-GCM, and recovery keys
+    │   └── keycache.py        # Short-lived session data-key cache
     │   └── routes/
     │       └── auth.py        # /auth blueprint
     └── migrations/            # Alembic migration history
@@ -106,7 +113,7 @@ Health check.
 ```
 
 ### `POST /auth/signup`
-Register a new user. The email is normalized to lowercase.
+Register a new user. The email is normalized to lowercase. The response includes a recovery key; store it securely because it is required to reset the master password.
 
 Request:
 ```json
@@ -120,7 +127,7 @@ Request:
 
 | Status | Meaning |
 |--------|---------|
-| 201 | Created. Returns `{ "id", "email" }` |
+| 201 | Created. Returns `{ "id", "email", "recovery_key" }` |
 | 400 | Missing fields, or password shorter than 8 characters |
 | 409 | Email already registered |
 
@@ -143,6 +150,48 @@ Requires the header `Authorization: Bearer <access_token>`.
 | 200 | Returns `{ "id", "email", "first_name" }` |
 | 401 | Missing, invalid or expired token |
 | 404 | User no longer exists |
+
+### `POST /auth/logout`
+Requires the header `Authorization: Bearer <access_token>`. Removes the token's cached data key.
+
+| Status | Meaning |
+|--------|---------|
+| 204 | Logged out |
+| 401 | Missing, invalid or expired token |
+
+### `POST /auth/change-password`
+Requires authentication. Re-encrypts the existing per-user data key with a key derived from the new password.
+
+Request:
+```json
+{
+  "old_password": "current-password",
+  "new_password": "new-password"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Password changed |
+| 400 | New password is too short or the old password is incorrect |
+| 401 | Missing, invalid or expired token |
+
+### `POST /auth/recover`
+Resets the master password using the recovery key returned by signup. The recovery key is accepted case-insensitively and with spaces or hyphens.
+
+Request:
+```json
+{
+  "email": "ada@example.com",
+  "recovery_key": "recovery-key-from-signup",
+  "new_password": "new-password"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Password reset |
+| 400 | Invalid email/recovery key or new password is too short |
 
 ### Example
 
@@ -169,6 +218,9 @@ curl localhost:5000/auth/me -H "Authorization: Bearer $TOKEN"
 | email | String(120) | Unique, required |
 | password_hash | String(256) | Werkzeug hash |
 | role | String(20) | Defaults to `user` on signup |
+| kdf_salt | LargeBinary(16) | Per-user Scrypt salt |
+| wrapped_key | LargeBinary | AES-GCM-wrapped per-user data key |
+| recovery_wrapped_key | LargeBinary | Recovery-key-wrapped per-user data key |
 | created_at | DateTime | UTC |
 
 **password_entries**
@@ -178,7 +230,7 @@ curl localhost:5000/auth/me -H "Authorization: Bearer $TOKEN"
 | id | Integer | Primary key |
 | user_id | Integer | FK to `users.id`, indexed |
 | title, username | String(100) | Required |
-| password_enc | LargeBinary | Encrypted password (encryption not yet implemented) |
+| password_enc | LargeBinary | Reserved for encrypted password data |
 | url | String(255) | Required. Unique per user (`uq_user_url`) |
 | category | String(50) | Defaults to `Other` |
 | favorite | Boolean | Defaults to `False` |
@@ -187,7 +239,6 @@ curl localhost:5000/auth/me -H "Authorization: Bearer $TOKEN"
 ## Roadmap
 
 - [ ] CRUD endpoints for password entries (JWT-protected, scoped to the owner)
-- [ ] Encrypt and decrypt `password_enc` (for example with `cryptography` / Fernet)
+- [ ] Use the per-user data key to encrypt and decrypt `password_enc`
 - [ ] Role-based access control
-- [ ] Tests
 - [ ] Frontend
