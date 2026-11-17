@@ -1,3 +1,4 @@
+import base64
 import os
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -24,3 +25,15 @@ def encrypt(key: bytes, data: bytes) -> bytes:
 def decrypt(key: bytes, blob: bytes) -> bytes:
     """Raises crytpography.exceptions.InvalidTag if the key is wrong or data is altered"""
     return AESGCM(key).decrypt(blob[:12], blob[12:], None)
+
+
+def new_recovery_key() -> tuple[bytes, str]:
+    raw = os.urandom(32)
+    text = base64.b32encode(raw).decode().rstrip("=")
+    return raw, "-".join(text[i : i + 4] for i in range(0, len(text), 4))
+
+
+def parse_recover_key(text: str) -> bytes:
+    s = text.replace("-", "").replace(" ", "").upper()
+    s += "=" * (-len(s) % 8)
+    return base64.b32decode(s)
