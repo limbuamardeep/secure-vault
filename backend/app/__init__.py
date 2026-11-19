@@ -3,6 +3,7 @@ from flask import Flask, jsonify
 
 from .extensions import db, jwt, migrate
 from .routes.auth import bp as auth_bp
+from .routes.vault import bp as vault_bp
 
 
 def create_app():
@@ -11,8 +12,10 @@ def create_app():
     db.init_app(app)
     migrate.init_app(app, db)
     app.register_blueprint(auth_bp)
-    jwt.init_app(app)
+    app.register_blueprint(vault_bp)
 
+    jwt.init_app(app)
+    
     @app.get("/")
     def health():
         return jsonify({"status": "ok"})
