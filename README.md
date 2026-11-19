@@ -2,7 +2,7 @@
 
 A password-manager backend built with Flask. Users can register, log in with JWT authentication, and protect their vault data with a per-user encryption key.
 
-> **Status:** Work in progress. Authentication, password recovery, password changes, and per-user key wrapping are implemented. Password-entry CRUD endpoints are not implemented yet.
+> **Status:** Authentication, password recovery, password changes, per-user key wrapping, and JWT-protected password-entry CRUD are implemented.
 
 ## Features implemented so far
 
@@ -16,6 +16,9 @@ A password-manager backend built with Flask. Users can register, log in with JWT
 - AES-GCM encryption with a per-user data key
 - Scrypt key derivation from the master password
 - Recovery-key wrapping of the per-user data key
+- Password-entry listing, creation, reveal, editing, and deletion
+- AES-GCM encryption for stored password values
+- Entries scoped to the authenticated user's JWT identity
 - Database migrations with Flask-Migrate / Alembic
 - Health-check endpoint
 - Pytest coverage for cryptography and authentication/recovery flows
@@ -47,7 +50,8 @@ secure-vault/
     │   ├── crypto.py          # Key derivation, AES-GCM, and recovery keys
     │   └── keycache.py        # Short-lived session data-key cache
     │   └── routes/
-    │       └── auth.py        # /auth blueprint
+    │           ├── auth.py        # /auth blueprint
+    │           └── vault.py       # JWT-protected /vault blueprint
     └── migrations/            # Alembic migration history
 ```
 
@@ -79,7 +83,7 @@ JWT_SECRET_KEY=<another-long-random-string>
 DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/secure_vault
 ```
 
-> `.env.example` currently lists only `SECRET_KEY`. `JWT_SECRET_KEY` is also required for token signing, so make sure you set it.
+> `JWT_SECRET_KEY` is required for token signing. Set it separately from `SECRET_KEY`.
 
 Generate secure values with:
 
@@ -193,6 +197,78 @@ Request:
 | 200 | Password reset |
 | 400 | Invalid email/recovery key or new password is too short |
 
+### `GET /vault`
+Requires authentication. Returns password entries owned by the authenticated user, ordered by newest first.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Returns the user's entries |
+| 401 | Missing, invalid or expired token |
+
+### `POST /vault`
+Requires authentication. Creates an encrypted password entry.
+
+Request:
+```json
+{
+  "title": "Example Account",
+  "username": "ada",
+  "password": "entry-secret",
+  "url": "https://example.com",
+  "category": "Security"
+}
+```
+
+`category` may be `Email`, `Development`, `Entertainment`, `Finance`, `Security`, `System`, or `Other`. It defaults to `Other`.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Returns the created entry metadata |
+| 400 | Missing fields or invalid category |
+| 401 | Missing, invalid or expired token, or no cached data key |
+| 409 | The user already has an entry for that URL |
+
+### `POST /vault/<entry_id>/reveal`
+Requires authentication. Decrypts and returns the password for an entry owned by the user.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Returns `{ "password": "<plaintext>" }` |
+| 401 | Missing, invalid or expired token |
+| 409 | Session data key is unavailable or the entry is not owned/found |
+| 500 | The encrypted password could not be decrypted |
+
+### `POST /vault/<entry_id>`
+Requires authentication. Updates entry fields and/or re-encrypts a new password.
+
+Request fields are optional:
+```json
+{
+  "title": "Updated title",
+  "username": "new-username",
+  "url": "https://updated.example.com",
+  "category": "Development",
+  "favorite": true,
+  "password": "new-entry-secret"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Returns the updated entry metadata |
+| 400 | Invalid category |
+| 404 | Entry not found or not owned by the user |
+| 409 | Session data key unavailable or URL conflicts with another entry |
+
+### `DELETE /vault/<entry_id>`
+Requires authentication. Deletes an entry owned by the user.
+
+| Status | Meaning |
+|--------|---------|
+| 204 | Entry deleted |
+| 400 | Entry not found or not owned by the user |
+| 401 | Missing, invalid or expired token |
+
 ### Example
 
 ```bash
@@ -205,6 +281,13 @@ TOKEN=$(curl -s -X POST localhost:5000/auth/login \
   -d '{"email":"ada@example.com","password":"supersecret1"}' | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 curl localhost:5000/auth/me -H "Authorization: Bearer $TOKEN"
+
+curl -X POST localhost:5000/vault \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Example","username":"ada","password":"entry-secret","url":"https://example.com","category":"Security"}'
+
+curl localhost:5000/vault -H "Authorization: Bearer $TOKEN"
 ```
 
 ## Data model
@@ -230,7 +313,7 @@ curl localhost:5000/auth/me -H "Authorization: Bearer $TOKEN"
 | id | Integer | Primary key |
 | user_id | Integer | FK to `users.id`, indexed |
 | title, username | String(100) | Required |
-| password_enc | LargeBinary | Reserved for encrypted password data |
+| password_enc | LargeBinary | AES-GCM-encrypted password data |
 | url | String(255) | Required. Unique per user (`uq_user_url`) |
 | category | String(50) | Defaults to `Other` |
 | favorite | Boolean | Defaults to `False` |
@@ -238,7 +321,7 @@ curl localhost:5000/auth/me -H "Authorization: Bearer $TOKEN"
 
 ## Roadmap
 
-- [ ] CRUD endpoints for password entries (JWT-protected, scoped to the owner)
-- [ ] Use the per-user data key to encrypt and decrypt `password_enc`
+- [x] CRUD endpoints for password entries (JWT-protected, scoped to the owner)
+- [x] Use the per-user data key to encrypt and decrypt `password_enc`
 - [ ] Role-based access control
 - [ ] Frontend
